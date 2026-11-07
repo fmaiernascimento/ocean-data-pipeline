@@ -45,6 +45,7 @@
 import requests # This is to get the dataset
 import statistics # This is to get the statistics package
 import validation # count_missing, count_invalid_data | since we used validation we need to do vailadion.count)missing | we could use from validation import count_missing, count_invalid_data
+import pandas as pd # we are going to play with tables :)
 
 
 url = (
@@ -148,12 +149,80 @@ print("------Test Data 2-----")
 
 test_data = [10.2, None, 999.0, -300.0, 10.5, None, 40.0, -2.5]
 
-miss_data=validation.count_missing(test_data)
-inval_data=validation.count_invalid_data(test_data,-2.5,40)
+miss_data = validation.count_missing(test_data)
+inval_data = validation.count_invalid_data(test_data,-2.5,40)
 
 print(f"Total values: {len(test_data)} ")
 print(f"Missing Values: {miss_data} ")
 print(f"Invalid Values: {inval_data} ")
 print(f"Valid values: {len(test_data)-(inval_data+miss_data)} ")
 print("-----------")
+
+# Playing with Pandas:
+
+sst_df = pd.DataFrame({
+    "time":time,
+    "sst": sst
+    })
+
+
+sst_df["time"] = pd.to_datetime(sst_df["time"])
+
+print("------PANDAS-----")
+
+sst_df.info()
+
+print(sst_df.shape)
+print(sst_df.head(5))
+print(sst_df.tail(5))
+print(sst_df.head(-5))
+print("-----------")
+
+
+
+# understand what a DataFrame is and statistics with Pandas:
+sst_df["sst"]
+print(f"Minimum SST: {sst_df["sst"].min()}")
+print(f"Maximum SST: {sst_df["sst"].max()}")
+print("-----------")
+
+# Extracting Nan Numbers 
+val_data = 0
+m_data = 0
+miss_data = sst_df["sst"].isna()
+for value in miss_data:
+    if not value:
+        val_data += 1
+    else:
+        m_data += 1
+        
+
+print(f"Missing Values: {m_data} ")
+print(f"Valid values: {val_data} ")
+print(f"Mean SST: {sst_df["sst"].mean()}") # Already do  a NanMean
+print(f"Standard deviation SST: {sst_df["sst"].std(ddof=0)}")
+print("-----------")
+
+
+# Filtering 
+warm_sst = sst_df[sst_df["sst"]>10]
+
+warm_sst.info()
+print(f"Maximum SST: {warm_sst["sst"].max()}")
+print("-----------")
+
+
+
+# Selecting just one day:
+
+print(sst_df.iloc[::24])
+print("-----------")
+
+day10_sst = sst_df[(sst_df["time"] >= "2026-11-10 00:00:00") & (sst_df["time"] <= "2026-11-10 23:59:59")]
+day10_sst.info()
+
+print(f"How many hourly measurements are available for that day? {day10_sst.shape[0]} hourly measurements")
+print(f"What is the minimum SST? {day10_sst["sst"].min()} °C")
+print(f"What is the maximum SST? {day10_sst["sst"].max()} °C")
+print(f"What is the mean SST? {day10_sst["sst"].mean()} °C")
 
