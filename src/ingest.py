@@ -46,6 +46,7 @@ import requests # This is to get the dataset
 import statistics # This is to get the statistics package
 import validation # count_missing, count_invalid_data | since we used validation we need to do vailadion.count)missing | we could use from validation import count_missing, count_invalid_data
 import pandas as pd # we are going to play with tables :)
+from pathlib import Path
 
 
 url = (
@@ -218,11 +219,91 @@ print("-----------")
 print(sst_df.iloc[::24])
 print("-----------")
 
-day10_sst = sst_df[(sst_df["time"] >= "2026-11-10 00:00:00") & (sst_df["time"] <= "2026-11-10 23:59:59")]
+day10_sst = sst_df[(sst_df["time"] >= "2026-11-17 00:00:00") & (sst_df["time"] < "2026-11-18 00:00:00")]
 day10_sst.info()
 
 print(f"How many hourly measurements are available for that day? {day10_sst.shape[0]} hourly measurements")
 print(f"What is the minimum SST? {day10_sst["sst"].min()} °C")
 print(f"What is the maximum SST? {day10_sst["sst"].max()} °C")
 print(f"What is the mean SST? {day10_sst["sst"].mean()} °C")
+print("-----------")
+print("-----------")
 
+
+# using groupby():
+sst_dt = sst_df["time"].dt.date
+print((sst_dt))
+print("-----------")
+
+sst_df["sst"].groupby(sst_dt)
+daily_mean = sst_df["sst"].groupby(sst_dt).mean()
+print(daily_mean)
+print("---daily mean--------")
+
+
+daily_change = daily_mean.diff()
+print(daily_change)
+print("----daily change-------")
+
+print(-(daily_change.min()))
+print(daily_change.idxmin())
+print("----Min and Max-------")
+
+valid_change = daily_change.dropna()
+print(valid_change)
+print("----valid change-------")
+
+# Checking path before reading:
+history_path = Path("data/processed/daily_sst.csv")
+print(history_path.exists())
+
+# Reading the previouslysaved data:
+if history_path.exists():
+    saved_dmean = pd.read_csv(history_path)
+    saved_dmean = saved_dmean.set_index("time")
+    saved_dmean.index = pd.to_datetime(saved_dmean.index).date
+
+    # recovered_history = pd.Series(
+    #     [8.612500, 8.595833, 8.408333, 8.395833],
+    #     index=pd.to_datetime(
+    #         ["2026-11-15", "2026-11-16", "2026-11-17", "2026-11-18"]
+    #     ).date,
+    #     name="sst",
+    # )
+
+    combined_sst = pd.concat([
+        saved_dmean["sst"],
+        daily_mean,
+    ])
+
+    combined_sst = combined_sst[
+        ~combined_sst.index.duplicated(keep="last")
+    ]
+
+    saved_dmean = combined_sst
+else:
+    saved_dmean = daily_mean
+
+saved_dmean = saved_dmean.sort_index()
+
+history_path.parent.mkdir(parents=True, exist_ok=True)
+saved_dmean.to_csv(history_path, index_label="time")
+
+# Save the complete daily SST history
+saved_dmean.to_csv(history_path, index_label="time")
+
+print("-----daily mean------")
+print(saved_dmean)
+print("-----daily mean------")
+
+# # Saving the data:
+# daily_mean.to_csv("data/processed/daily_sst.csv")
+
+
+# print(saved_dmean.shape)
+# print(saved_dmean)
+# print("-----daily mean------")
+# print(saved_dmean.shape)
+
+
+# print(saved_dmean["sst"] - daily_mean)
