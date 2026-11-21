@@ -1,54 +1,14 @@
-
-## My firts attemp was with NOAA data, but the dataset was never found... so we moved on. 
-# url = (
-#     "https://www.ncei.noaa.gov/erddap/search/index.json"
-#     "?page=1&itemsPerPage=100&searchFor=sea%20surface%20temperature"
-# )
-# # to get what is the name of everything on the data:
-# # {'table': {'columnNames' ....  'columnTypes' ...  'rows' ... } 
-
-# # Get the dataset records returned by the search
-# rows = data["table"]["rows"]
-
-# # getting the column names to know which one is which
-# column_names = data["table"]["columnNames"]
-
-# # To verity which is the correct names of each column: 
-# # ['griddap', 'Subset', 'tabledap', 'Make A Graph', 'wms', 'files', 'Title', 'Summary', 'Info', 'Background Info', 'RSS', 'Institution', 'Dataset ID']
-
-# # getting the indexes of the things I want to see/exctract:
-# title_ix = column_names.index("Title")
-# dataset_id_ix = column_names.index("Dataset ID")
-# institution_ix = column_names.index("Institution")
-
-# # selecting a dataset:
-# selected_dataset = None
-
-# print(f"Number of datasets found: {len(rows)}")
-
-# for row in rows:
-#     #if row[dataset_id_ix] == "AEC_useast_satellite_climo":
-#     #    selected_dataset = row
-#     if "SST" in row[title_ix]:
-#         print(f"Title: {row[title_ix]}")
-#         print(f"Dataset ID: {row[dataset_id_ix]}")
-#         print(f"Institution: {row[institution_ix]}")
-#         print("-----------")
-
-# # if selected_dataset is None:
-# #     print("Dataset not found")
-# # else: 
-# #     print(f"Selected dataset: {selected_dataset[title_ix]}")
-    
-
-
-import requests # This is to get the dataset
-import statistics # This is to get the statistics package
-import validation # count_missing, count_invalid_data | since we used validation we need to do vailadion.count)missing | we could use from validation import count_missing, count_invalid_data
-import pandas as pd # we are going to play with tables :)
+from datetime import datetime, timezone
+import json
 from pathlib import Path
+from tempfile import NamedTemporaryFile
+
+import pandas as pd
+import requests
+import validation
 
 
+# Choose the location and hourly temperature data to download:
 url = (
     "https://marine-api.open-meteo.com/v1/marine"
     "?latitude=54.1"
@@ -56,254 +16,104 @@ url = (
     "&hourly=sea_surface_temperature"
 )
 
-response = requests.get(url)
-# response.raise_for_status()
-print(response.status_code)
+# Stop if the server takes too long or returns an error:
+response = requests.get(url, timeout=30)
+response.raise_for_status()
 
-# get the data:
+# Read the response before making any changes to the temperatures:
 data = response.json()
 
-# to get what is the data:
-print(type(data))
-print(data.keys())
-print("-----------")
+# Keep the original response in a separate file so we can check it later:
+raw_folder = Path("data/raw")
+raw_folder.mkdir(parents=True, exist_ok=True)
+download_time = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%S%fZ")
+with NamedTemporaryFile(
+    mode="w", encoding="utf-8", dir=raw_folder,
+    prefix=f"sst_{download_time}_", suffix=".json", delete=False,
+) as raw_file:
+    json.dump(data, raw_file, indent=2)
+print(f"Saved original response to {raw_file.name}")
 
-
-# to see what are the constest of hourly_units
-print(data['hourly_units'])
-print("-----------")
-
-# to see what keys are in hourly
-print(data["hourly"].keys())
-print("-----------")
-
-# Extracting trhe variables:
+# Extract the timestamps and temperatures from the response:
 time = data["hourly"]["time"]
 sst = data["hourly"]["sea_surface_temperature"]
 
-# to see th etype and lenght of both times series:
-print(type(time))
-print(type(sst))
-print("-----------")
-print(len(time))
-print(len(sst))
-print("-----------")
+# Check that each timestamp has a temperature entry:
+if len(time) != len(sst):
+    raise ValueError("The timestamp and SST lists have different lengths.")
 
-# Organazing the data, seeing how many nones are, time steps and so on:
-i = 0
-im = 0
-jm = 0
-ii=0
+# Use our validation functions to count missing and out-of-range temperatures:
+missing_sst = validation.count_missing(sst)
+invalid_sst = validation.count_invalid_data(sst, -2.5, 40)
+print(f"Missing SST values: {missing_sst}")
+print(f"Out-of-range SST values: {invalid_sst}")
 
-for temp in sst:
-
-    if temp is None:
-        im = im+1
-    else:
-        jm = jm +1
-
-    if temp < -2.5 or temp > 40:
-        ii=ii+1
-
-    i=i+1
-    
-print(f"Total timestamps: {i}")
-print(f"Missing SST measurements: {im}")
-print(f"Valid SST measurements: {jm}")
-print(f"Invalid SST measurements: X: {ii}")
-print("-----------")
-
-
-# Doing first statistical analysis on the data:
-minsst=min(sst)
-maxsst=max(sst)
-meansst=sum(sst)/len(sst)
-sstdvsst=statistics.stdev(sst)   # Sample standard deviation (N-1)
-pstdsst=statistics.pstdev(sst)  # Population standard deviation (N)
-
-print(f"Minimum SST: {minsst:.2f} °C")
-print(f"Maximum SST: {maxsst:.2f} °C")
-print(f"Mean SST: {meansst:.2f} °C")
-print(f"Mean SST: {meansst:.2f} °C")
-print(f"Mean SST: {meansst:.2f} °C")
-print(f"SST Sample standard deviation: {sstdvsst:.2f} °C")
-print(f"SST Population standard deviation: {pstdsst:.2f} °C")
-print("-----------")
-
-
-# calling the functions:
-
-
-print(f"Missing Values: {validation.count_missing(sst)} ")
-print(f"Invalid Values: {validation.count_invalid_data(sst,-2.5,40)} ")
-print("-----------")
-
-print("--------Test Data 1---")
-
-test_data = [10.2, None, 10.5, 999.0, -300.0, 10.1]
-
-print(f"Invalid SST: {validation.count_invalid_data(test_data, -2.5, 40)}")
-print("-----------")
-
-print("------Test Data 2-----")
-
-
-test_data = [10.2, None, 999.0, -300.0, 10.5, None, 40.0, -2.5]
-
-miss_data = validation.count_missing(test_data)
-inval_data = validation.count_invalid_data(test_data,-2.5,40)
-
-print(f"Total values: {len(test_data)} ")
-print(f"Missing Values: {miss_data} ")
-print(f"Invalid Values: {inval_data} ")
-print(f"Valid values: {len(test_data)-(inval_data+miss_data)} ")
-print("-----------")
-
-# Playing with Pandas:
-
-sst_df = pd.DataFrame({
-    "time":time,
-    "sst": sst
-    })
-
-
+# Put the hourly values in a table and convert the timestamps to dates and times:
+sst_df = pd.DataFrame({"time": time, "sst": pd.Series(sst, dtype="float64")})
 sst_df["time"] = pd.to_datetime(sst_df["time"])
 
-print("------PANDAS-----")
+# Mark temperatures outside our limits and leave them out of the calculations:
+sst_df["out_of_range"] = sst_df["sst"].notna() & ~sst_df["sst"].between(-2.5, 40)
+sst_df.loc[sst_df["out_of_range"], "sst"] = float("nan")
 
-sst_df.info()
+# Stop before updating the history if there are no usable temperatures:
+if not sst_df["sst"].notna().any():
+    raise ValueError("No usable SST values are available in this batch. The saved history has not been changed.")
 
-print(sst_df.shape)
-print(sst_df.head(5))
-print(sst_df.tail(5))
-print(sst_df.head(-5))
-print("-----------")
-
-
-
-# understand what a DataFrame is and statistics with Pandas:
-sst_df["sst"]
-print(f"Minimum SST: {sst_df["sst"].min()}")
-print(f"Maximum SST: {sst_df["sst"].max()}")
-print("-----------")
-
-# Extracting Nan Numbers 
-val_data = 0
-m_data = 0
-miss_data = sst_df["sst"].isna()
-for value in miss_data:
-    if not value:
-        val_data += 1
-    else:
-        m_data += 1
-        
-
-print(f"Missing Values: {m_data} ")
-print(f"Valid values: {val_data} ")
-print(f"Mean SST: {sst_df["sst"].mean()}") # Already do  a NanMean
-print(f"Standard deviation SST: {sst_df["sst"].std(ddof=0)}")
-print("-----------")
-
-
-# Filtering 
-warm_sst = sst_df[sst_df["sst"]>10]
-
-warm_sst.info()
-print(f"Maximum SST: {warm_sst["sst"].max()}")
-print("-----------")
-
-
-
-# Selecting just one day:
-
-print(sst_df.iloc[::24])
-print("-----------")
-
-day10_sst = sst_df[(sst_df["time"] >= "2026-11-17 00:00:00") & (sst_df["time"] < "2026-11-18 00:00:00")]
-day10_sst.info()
-
-print(f"How many hourly measurements are available for that day? {day10_sst.shape[0]} hourly measurements")
-print(f"What is the minimum SST? {day10_sst["sst"].min()} °C")
-print(f"What is the maximum SST? {day10_sst["sst"].max()} °C")
-print(f"What is the mean SST? {day10_sst["sst"].mean()} °C")
-print("-----------")
-print("-----------")
-
-
-# using groupby():
+# Calculate each day's mean using the available temperatures:
 sst_dt = sst_df["time"].dt.date
-print((sst_dt))
-print("-----------")
+daily_mean = sst_df.groupby(sst_dt).agg(
+    sst=("sst", "mean"),
+    valid_hours=("sst", "count"),
+)
 
-sst_df["sst"].groupby(sst_dt)
-daily_mean = sst_df["sst"].groupby(sst_dt).mean()
-print(daily_mean)
-print("---daily mean--------")
+# Leave days with no temperatures out of the new batch to preserve their saved values:
+daily_mean = daily_mean.dropna(subset=["sst"])
 
-
-daily_change = daily_mean.diff()
-print(daily_change)
-print("----daily change-------")
-
-print(-(daily_change.min()))
-print(daily_change.idxmin())
-print("----Min and Max-------")
-
-valid_change = daily_change.dropna()
-print(valid_change)
-print("----valid change-------")
-
-# Checking path before reading:
+# Find the file where we keep the daily history:
 history_path = Path("data/processed/daily_sst.csv")
-print(history_path.exists())
 
-# Reading the previouslysaved data:
+# Read the saved history and give its dates the same type as the new dates:
 if history_path.exists():
     saved_dmean = pd.read_csv(history_path)
     saved_dmean = saved_dmean.set_index("time")
     saved_dmean.index = pd.to_datetime(saved_dmean.index).date
 
-    # recovered_history = pd.Series(
-    #     [8.612500, 8.595833, 8.408333, 8.395833],
-    #     index=pd.to_datetime(
-    #         ["2026-11-15", "2026-11-16", "2026-11-17", "2026-11-18"]
-    #     ).date,
-    #     name="sst",
-    # )
+    # Older saved means have an unknown hourly count until a new batch updates them:
+    if "valid_hours" not in saved_dmean.columns:
+        saved_dmean["valid_hours"] = pd.NA
 
+    # Combine the history with the new batch, placing the newest values last:
     combined_sst = pd.concat([
-        saved_dmean["sst"],
+        saved_dmean,
         daily_mean,
     ])
 
+    # Keep the newest value when a date appears more than once:
     combined_sst = combined_sst[
         ~combined_sst.index.duplicated(keep="last")
     ]
-
     saved_dmean = combined_sst
 else:
+    # Start the history with this batch when there is no saved file yet:
     saved_dmean = daily_mean
 
+# Put the dates in chronological order:
 saved_dmean = saved_dmean.sort_index()
 
+# Keep hourly counts as whole numbers and leave unknown older counts blank:
+saved_dmean["valid_hours"] = saved_dmean["valid_hours"].astype("Int64")
+
+# Create any missing folders and save the complete daily history:
 history_path.parent.mkdir(parents=True, exist_ok=True)
 saved_dmean.to_csv(history_path, index_label="time")
+print(f"Saved {len(saved_dmean)} daily SST values to {history_path}")
 
-# Save the complete daily SST history
-saved_dmean.to_csv(history_path, index_label="time")
-
+# Show the complete daily history after saving:
 print("-----daily mean------")
-print(saved_dmean)
+print(saved_dmean["sst"])
 print("-----daily mean------")
 
-# # Saving the data:
-# daily_mean.to_csv("data/processed/daily_sst.csv")
-
-
-# print(saved_dmean.shape)
-# print(saved_dmean)
-# print("-----daily mean------")
-# print(saved_dmean.shape)
-
-
-# print(saved_dmean["sst"] - daily_mean)
+# Show how many usable hourly values contributed to each saved daily mean:
+print("-----usable hourly values------")
+print(saved_dmean["valid_hours"])
