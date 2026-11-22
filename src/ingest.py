@@ -3,17 +3,21 @@ import json
 from pathlib import Path
 from tempfile import NamedTemporaryFile
 
+import numpy as np
 import pandas as pd
 import requests
 import validation
+from salinity import collect_salinity
 
 
-# Choose the location and hourly temperature data to download:
+# Choose the location and hourly ocean variables to download together:
 url = (
     "https://marine-api.open-meteo.com/v1/marine"
     "?latitude=54.1"
     "&longitude=12.1"
     "&hourly=sea_surface_temperature"
+    ",ocean_current_velocity,ocean_current_direction,sea_level_height_msl"
+    "&wind_speed_unit=ms&timezone=GMT&forecast_days=7"
 )
 
 # Stop if the server takes too long or returns an error:
@@ -22,6 +26,7 @@ response.raise_for_status()
 
 # Read the response before making any changes to the temperatures:
 data = response.json()
+marine_downloaded_at = datetime.now(timezone.utc)
 
 # Keep the original response in a separate file so we can check it later:
 raw_folder = Path("data/raw")
@@ -33,6 +38,122 @@ with NamedTemporaryFile(
 ) as raw_file:
     json.dump(data, raw_file, indent=2)
 print(f"Saved original response to {raw_file.name}")
+
+# Check the ocean units before saving currents in m/s and sea level in metres:
+marine_units = data["hourly_units"]
+if (
+    marine_units["sea_surface_temperature"] != "°C"
+    or marine_units["ocean_current_velocity"] != "m/s"
+    or marine_units["ocean_current_direction"] != "°"
+    or marine_units["sea_level_height_msl"] != "m"
+):
+    raise ValueError("The marine response uses unexpected temperature, current, or sea-level units.")
+
+# Save hourly SST, currents, and sea level, retaining the original forecast batches:
+marine_hourly = data["hourly"]
+marine_df = pd.DataFrame({
+    "time": pd.to_datetime(marine_hourly["time"], utc=True),
+    "sst_c": marine_hourly["sea_surface_temperature"],
+    "current_speed_ms": marine_hourly["ocean_current_velocity"],
+    "current_direction_deg": marine_hourly["ocean_current_direction"],
+    "sea_level_msl_m": marine_hourly["sea_level_height_msl"],
+})
+if marine_df.empty:
+    raise ValueError("The marine response contains no hourly timestamps.")
+
+# Current directions describe where the water flows, clockwise from north:
+current_angle = np.deg2rad(marine_df["current_direction_deg"])
+marine_df["current_east_ms"] = marine_df["current_speed_ms"] * np.sin(current_angle)
+marine_df["current_north_ms"] = marine_df["current_speed_ms"] * np.cos(current_angle)
+marine_df["downloaded_at"] = marine_downloaded_at.isoformat()
+marine_df["latitude"] = data["latitude"]
+marine_df["longitude"] = data["longitude"]
+
+# Append the new ocean forecast while preserving previous downloads:
+marine_path = Path("data/processed/hourly_marine.csv")
+if marine_path.exists():
+    previous_marine = pd.read_csv(marine_path)
+    marine_df = pd.concat([previous_marine, marine_df], ignore_index=True)
+marine_df["time"] = pd.to_datetime(marine_df["time"], utc=True)
+marine_df = marine_df.drop_duplicates(subset=["downloaded_at", "time"], keep="last")
+marine_df = marine_df.sort_values(["downloaded_at", "time"])
+marine_path.parent.mkdir(parents=True, exist_ok=True)
+marine_df.to_csv(marine_path, index=False)
+print(f"Saved {len(marine_df)} hourly marine forecast records to {marine_path}")
+
+# Download wind and air temperature for the same requested location in UTC:
+weather_response = requests.get(
+    "https://api.open-meteo.com/v1/forecast",
+    params={
+        "latitude": 54.1,
+        "longitude": 12.1,
+        "hourly": "temperature_2m,wind_speed_10m,wind_direction_10m,shortwave_radiation",
+        "wind_speed_unit": "ms",
+        "timezone": "GMT",
+        "forecast_days": 7,
+    },
+    timeout=30,
+)
+weather_response.raise_for_status()
+weather_data = weather_response.json()
+weather_downloaded_at = datetime.now(timezone.utc)
+
+# Keep the original weather response, including its units and model location:
+with NamedTemporaryFile(
+    mode="w", encoding="utf-8", dir=raw_folder,
+    prefix=f"weather_{weather_downloaded_at.strftime('%Y%m%dT%H%M%S%fZ')}_",
+    suffix=".json", delete=False,
+) as weather_raw_file:
+    json.dump(weather_data, weather_raw_file, indent=2)
+print(f"Saved original weather response to {weather_raw_file.name}")
+
+# Put weather values into named columns with their units in the names:
+weather_hourly = weather_data["hourly"]
+if not (
+    len(weather_hourly["time"])
+    == len(weather_hourly["temperature_2m"])
+    == len(weather_hourly["wind_speed_10m"])
+    == len(weather_hourly["wind_direction_10m"])
+    == len(weather_hourly["shortwave_radiation"])
+):
+    raise ValueError("The weather timestamp and value lists have different lengths.")
+if not weather_hourly["time"]:
+    raise ValueError("The weather response contains no hourly timestamps.")
+
+# Check the requested units before giving the saved columns their names:
+weather_units = weather_data["hourly_units"]
+if (
+    weather_units["temperature_2m"] != "°C"
+    or weather_units["wind_speed_10m"] != "m/s"
+    or weather_units["wind_direction_10m"] != "°"
+    or weather_units["shortwave_radiation"] != "W/m²"
+):
+    raise ValueError("The weather response uses unexpected temperature or wind units.")
+
+weather_df = pd.DataFrame({
+    "time": pd.to_datetime(weather_hourly["time"], utc=True),
+    "air_temperature_c": weather_hourly["temperature_2m"],
+    "wind_speed_ms": weather_hourly["wind_speed_10m"],
+    "wind_direction_deg": weather_hourly["wind_direction_10m"],
+    "shortwave_radiation_wm2": weather_hourly["shortwave_radiation"],
+})
+
+# Keep the download time and grid location so different forecast batches stay identifiable:
+weather_df["downloaded_at"] = weather_downloaded_at.isoformat()
+weather_df["latitude"] = weather_data["latitude"]
+weather_df["longitude"] = weather_data["longitude"]
+
+# Keep previous hourly weather batches as well as the newly downloaded forecast:
+weather_path = Path("data/processed/hourly_weather.csv")
+if weather_path.exists():
+    previous_weather = pd.read_csv(weather_path)
+    weather_df = pd.concat([previous_weather, weather_df], ignore_index=True)
+weather_df["time"] = pd.to_datetime(weather_df["time"], utc=True)
+weather_df = weather_df.drop_duplicates(subset=["downloaded_at", "time"], keep="last")
+weather_df = weather_df.sort_values(["downloaded_at", "time"])
+weather_path.parent.mkdir(parents=True, exist_ok=True)
+weather_df.to_csv(weather_path, index=False)
+print(f"Saved {len(weather_df)} hourly weather forecast records to {weather_path}")
 
 # Extract the timestamps and temperatures from the response:
 time = data["hourly"]["time"]
@@ -117,3 +238,11 @@ print("-----daily mean------")
 # Show how many usable hourly values contributed to each saved daily mean:
 print("-----usable hourly values------")
 print(saved_dmean["valid_hours"])
+
+# Collect surface salinity near our offshore ocean grid cell for the same forecast dates:
+collect_salinity(
+    latitude=data["latitude"],
+    longitude=data["longitude"],
+    start_time=time[0],
+    end_time=time[-1],
+)
