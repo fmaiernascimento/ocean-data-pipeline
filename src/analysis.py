@@ -180,7 +180,7 @@ else:
     comparison = comparison.reindex(comparison_dates)
     weather_figure, (temperature_axis, wind_axis, direction_axis) = plt.subplots(
         3, 1, figsize=(10, 10), sharex=True,
-        gridspec_kw={"height_ratios": [3, 2, 1]},
+        gridspec_kw={"height_ratios": [3, 2, 2]},
     )
     temperature_axis.plot(
         comparison.index, comparison["sst"], marker="o", label="SST (sea-surface temperature)",
@@ -200,20 +200,136 @@ else:
     wind_axis.set_ylim(bottom=0)
     wind_axis.grid(True, alpha=0.3)
 
-    # Point arrows where the daily mean wind flows, with north up and east right:
+    # Anchor each wind arrow at its date on a visible timeline:
+    direction_axis.axhline(0, color="0.65", linewidth=1, zorder=1)
+    direction_axis.plot(comparison.index, np.zeros(len(comparison)), ".", color="0.4", zorder=2)
+    # Use a side velocity scale and keep arrow thickness fixed:
+    wind_vector_speed = np.hypot(comparison["wind_east_ms"], comparison["wind_north_ms"])
+    wind_vector_limit = max(5, 5 * np.ceil(wind_vector_speed.fillna(0).max() / 5))
+    direction_axis.set_ylim(-wind_vector_limit, wind_vector_limit)
     arrows = direction_axis.quiver(
         mdates.date2num(comparison.index), np.zeros(len(comparison)),
         comparison["wind_east_ms"], comparison["wind_north_ms"],
-        angles="uv", scale_units="inches", scale=15, pivot="middle", color="teal",
+        angles="uv", scale_units="y", scale=1, units="dots", width=3,
+        pivot="tail", color="teal", zorder=3,
     )
-    direction_axis.quiverkey(arrows, 0.9, 1.2, 5, "5 m/s", coordinates="axes")
     direction_axis.set_title("Mean wind flow direction · north ↑, east →", loc="left")
-    direction_axis.set_ylim(-1, 1)
-    direction_axis.set_yticks([])
+    direction_axis.set_ylabel("Velocity scale (m/s)")
+    direction_axis.set_yticks(np.linspace(-wind_vector_limit, wind_vector_limit, 5))
+    direction_axis.grid(True, alpha=0.3)
+    # Leave room for sideways arrows at the first and last dates:
+    direction_axis.margins(x=0.15)
     direction_axis.set_xlabel("Date (UTC)")
     direction_axis.xaxis.set_major_locator(mdates.AutoDateLocator(minticks=4, maxticks=8))
     direction_axis.xaxis.set_major_formatter(mdates.DateFormatter("%d %b"))
     weather_figure.tight_layout()
 
-# Open both figures to explore the saved forecasts and their daily changes:
+# Read the saved ocean and salinity forecasts, keeping salinity units as text:
+marine_path = project_folder / "data" / "processed" / "hourly_marine.csv"
+salinity_path = project_folder / "data" / "processed" / "hourly_salinity.csv"
+if marine_path.exists() and salinity_path.exists():
+    marine = pd.read_csv(marine_path)
+    salinity = pd.read_csv(salinity_path, dtype={"salinity_units": str})
+
+    # Select the latest downloaded batch from each source:
+    marine["time"] = pd.to_datetime(marine["time"], utc=True)
+    marine["downloaded_at"] = pd.to_datetime(marine["downloaded_at"], utc=True)
+    salinity["time"] = pd.to_datetime(salinity["time"], utc=True)
+    salinity["downloaded_at"] = pd.to_datetime(salinity["downloaded_at"], utc=True)
+    latest_marine_download = marine["downloaded_at"].max()
+    latest_salinity_download = salinity["downloaded_at"].max()
+    latest_marine = marine[marine["downloaded_at"] == latest_marine_download].copy()
+    latest_salinity = salinity[salinity["downloaded_at"] == latest_salinity_download].copy()
+    if latest_marine.empty or latest_salinity.empty:
+        raise ValueError("The ocean and salinity files need at least one downloaded batch.")
+
+    # Check that salinity refers to one depth and one set of units before averaging:
+    if latest_salinity["depth"].nunique() != 1 or latest_salinity["salinity_units"].nunique() != 1:
+        raise ValueError("The salinity batch mixes depths or units. Check it before comparing daily means.")
+    salinity_depth = latest_salinity["depth"].iloc[0]
+    salinity_units = latest_salinity["salinity_units"].iloc[0]
+    print(f"Ocean batch downloaded (UTC): {latest_marine_download}")
+    print(f"Salinity batch downloaded (UTC): {latest_salinity_download}")
+    print(f"Salinity sampling depth: {salinity_depth:.3f} m; source units: {salinity_units}")
+
+    # Apply the existing broad SST check to this hourly marine batch:
+    latest_marine["sst_c"] = latest_marine["sst_c"].where(latest_marine["sst_c"].between(-2.5, 40))
+
+    # Average current components using only hours with both components available:
+    paired_current = latest_marine[["current_east_ms", "current_north_ms"]].notna().all(axis=1)
+    latest_marine.loc[~paired_current, ["current_east_ms", "current_north_ms"]] = np.nan
+    daily_marine = latest_marine.set_index("time").sort_index().resample("D").agg(
+        sst_c=("sst_c", "mean"),
+        current_speed_ms=("current_speed_ms", "mean"),
+        current_east_ms=("current_east_ms", "mean"),
+        current_north_ms=("current_north_ms", "mean"),
+        sea_level_msl_m=("sea_level_msl_m", "mean"),
+        sst_hours=("sst_c", "count"),
+        current_hours=("current_east_ms", "count"),
+        sea_level_hours=("sea_level_msl_m", "count"),
+    )
+
+    # Average salinity on the same UTC day boundaries and keep the hourly counts:
+    daily_salinity = latest_salinity.set_index("time").sort_index().resample("D").agg(
+        sss=("sss", "mean"),
+        salinity_hours=("sss", "count"),
+    )
+    ocean_comparison = daily_marine.join(daily_salinity, how="inner")
+    print("-----daily ocean comparison (UTC days)------")
+    print(ocean_comparison)
+
+    # Compare the sources only on dates present in both latest forecast batches:
+    if ocean_comparison.empty:
+        print("The latest ocean and salinity forecasts have no shared dates yet.")
+    else:
+        ocean_dates = pd.date_range(ocean_comparison.index.min(), ocean_comparison.index.max(), freq="D")
+        ocean_comparison = ocean_comparison.reindex(ocean_dates)
+        ocean_figure, ocean_axes = plt.subplots(
+            5, 1, figsize=(11, 13), sharex=True,
+            gridspec_kw={"height_ratios": [2, 2, 2, 2, 2]},
+        )
+
+        # Keep each variable on its own labelled axis so their units stay clear:
+        ocean_axes[0].plot(ocean_comparison.index, ocean_comparison["sst_c"], marker="o")
+        ocean_axes[0].set_title("Daily mean SST from the latest ocean forecast")
+        ocean_axes[0].set_ylabel("SST (°C)")
+        ocean_axes[1].plot(ocean_comparison.index, ocean_comparison["sss"], marker="o", color="darkorange")
+        ocean_axes[1].set_title(f"Daily mean surface-layer salinity · depth {salinity_depth:.3f} m")
+        ocean_axes[1].set_ylabel(f"Salinity ({salinity_units})")
+        ocean_axes[2].plot(ocean_comparison.index, ocean_comparison["current_speed_ms"], marker="o", color="teal")
+        ocean_axes[2].set_title("Daily mean current-speed magnitude")
+        ocean_axes[2].set_ylabel("Current speed (m/s)")
+        ocean_axes[2].set_ylim(bottom=0)
+
+        # Anchor current vectors at their dates; opposite hourly flows can cancel out:
+        ocean_axes[3].axhline(0, color="0.65", linewidth=1, zorder=1)
+        ocean_axes[3].plot(ocean_comparison.index, np.zeros(len(ocean_comparison)), ".", color="0.4", zorder=2)
+        # Start with a ±0.1 m/s side scale, expanding it if a future vector is stronger:
+        current_vector_speed = np.hypot(ocean_comparison["current_east_ms"], ocean_comparison["current_north_ms"])
+        current_vector_limit = max(0.1, 0.05 * np.ceil(current_vector_speed.fillna(0).max() / 0.05))
+        ocean_axes[3].set_ylim(-current_vector_limit, current_vector_limit)
+        current_arrows = ocean_axes[3].quiver(
+            mdates.date2num(ocean_comparison.index), np.zeros(len(ocean_comparison)),
+            ocean_comparison["current_east_ms"], ocean_comparison["current_north_ms"],
+            angles="uv", scale_units="y", scale=1, units="dots", width=3,
+            pivot="tail", color="teal", zorder=3,
+        )
+        ocean_axes[3].set_title("Mean current flow direction · north ↑, east →", loc="left")
+        ocean_axes[3].set_ylabel("Velocity scale (m/s)")
+        ocean_axes[3].set_yticks(np.linspace(-current_vector_limit, current_vector_limit, 5))
+        # Leave room for sideways currents at the ends of the timeline:
+        ocean_axes[3].margins(x=0.15)
+        ocean_axes[4].plot(ocean_comparison.index, ocean_comparison["sea_level_msl_m"], marker="o", color="purple")
+        ocean_axes[4].set_title("Daily mean sea level relative to mean sea level")
+        ocean_axes[4].set_ylabel("Sea level (m)")
+        ocean_axes[4].set_xlabel("Date (UTC)")
+        for ocean_axis in ocean_axes:
+            ocean_axis.grid(True, alpha=0.3)
+        ocean_axes[4].xaxis.set_major_locator(mdates.AutoDateLocator(minticks=4, maxticks=8))
+        ocean_axes[4].xaxis.set_major_formatter(mdates.DateFormatter("%d %b"))
+        ocean_figure.tight_layout()
+else:
+    print("Run ingestion to save both hourly_marine.csv and hourly_salinity.csv for the ocean comparison.")
+
+# Open the figures to explore the saved forecasts and their daily changes:
 plt.show()
